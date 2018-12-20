@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import sys
 from enum import Enum
 
@@ -17,17 +18,18 @@ KAKFA_TOPIC = "emf"
 KAFKA_GROUP_ID = "monitoring-app"
 KAFKA_BOOTSTRAP_SERVER = ['172.16.28.35:9092']
 KAFKA_OFFSET = 'earliest'
-
-
-class Message(JsonObject):
-    msg_content = StringProperty()
-    event_timestamp = DateTimeProperty()
+REDIS_KEY_PREFIX = "user_sentiment"
 
 
 class Sentiment(Enum):
     HAPPY = 1
     NEUTRAL = 2
     ANGRY = 3
+
+
+class Message(JsonObject):
+    msg_content = StringProperty()
+    event_timestamp = DateTimeProperty()
 
 
 class EMFObject(JsonObject):
@@ -92,12 +94,34 @@ consumer.poll()
 consumer.seek_to_end()
 
 
-def put_in_redis(bot_ref, user_id, user_msg, bot_reply, is_default_path):
-    pass
+def redis_key_for_user(emf):
+    return '%s__%s__%s' % (REDIS_KEY_PREFIX, emf.bot_ref, emf.user_id)
 
 
-def check_frustrated(bot_ref, user_id):
-    pass
+def put_in_redis(emf, emotion):
+    try:
+        # redisClient.rpush(redis_key_for_user(emf), json.dumps(emf.to_json()))
+
+        key = redis_key_for_user(emf)
+
+        pipe = redisClient.pipeline(transaction=True)
+        pipe.rpush(key, json.dumps(emf.to_json()))
+        pipe.expire(key, 86400)  # 1 hour expiry
+        random_int = random.randrange(1, 5)
+        if random_int == 1:  # trim my list with 1/5 chance
+            pipe.ltrim(key, 0, 10)  # trims the list to store only last 10 in list
+        results = pipe.execute()
+    except Exception as e:
+        LOG.error(e, exc_info=True)
+
+
+def check_frustrated(emf):
+    """
+    Fetch past emotion levels and recompute the new emotion level
+    :param emf:
+    :return: Boolean indicating if the user is frustrated or not along with the actual emotion of current level to be logged into redis
+    """
+    return False, Sentiment.NEUTRAL
 
 
 def mock_user_msg(bot_ref, user_id, emotion):
@@ -108,13 +132,15 @@ try:
     for message in consumer:
         # parse message get user id, current user message, bot message, is default path
         LOG.info(message.value)
-        # # add current details to redis.
-        # put_in_redis(bot_ref, user_id, user_msg, bot_reply, is_default_path)
-        # # check frustration for current user:
-        # is_frustrated, emotion = check_frustrated(bot_ref, user_id)
-        # if is_frustrated:
-        #     # trigger path related to emotion
-        #     mock_user_msg(bot_ref, user_id, emotion)
+        # check frustration for current user:
+        is_frustrated, emotion = check_frustrated(message.value)
+        if is_frustrated:
+            # trigger path related to emotion
+            mock_user_msg(message.value.bot_ref, message.value.user_id, emotion)
+        # # add current message emotion levels to redis.
+        if message.value.user_id == 'c5da2f24-48b7-439b-b8da-83944675798c':
+            put_in_redis(message.value, emotion)
+
 except KeyboardInterrupt:
     LOG.error('KeyBoard Interrupt')
     sys.exit()
