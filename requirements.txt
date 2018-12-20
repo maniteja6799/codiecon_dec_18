@@ -1,2 +1,5 @@
 kafka-python
 redis
+cython
+jsonobject
+-e git+https://github.com/subham6651/jsonobject.git@master#egg=jsonobject
